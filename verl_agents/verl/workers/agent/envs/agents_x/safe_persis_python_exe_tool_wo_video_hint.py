@@ -20,7 +20,11 @@ import time
 from decord import VideoReader, cpu  
 
 class PersistentWorker:
-    """持久化的工作进程"""
+    """持久化的工作进程。
+
+    每条 rollout 轨迹会持有自己的 Python 子进程。这样模型在第 1 轮代码里定义的
+    变量、采样出的中间结果，可以在第 2 轮继续使用；同时也避免用户代码污染训练主进程。
+    """
     
     def __init__(self):
         self.input_queue = multiprocessing.Queue()
@@ -66,7 +70,8 @@ class PersistentWorker:
                     program_io = io.StringIO()
                     
                     try:
-                        # 记录执行前的图像数量
+                        # 记录执行前的图像数量，只把本轮 plt.show() 新产生的图片作为
+                        # observation 返回，避免把历史图片重复喂回模型。
                         pre_figures_count = len(runtime.captured_figures)
                         
                         with redirect_stdout(program_io):
@@ -164,7 +169,11 @@ class PersistentWorker:
                 self.process.terminate()
 
 class SafeImageRuntime:
-    """安全版本的Runtime，强制使用隔离环境"""
+    """视频工具的 Python runtime。
+
+    这里会把原始视频路径打开成 decord.VideoReader，并注入为 video_clue_0、
+    video_clue_1 ...。模型生成的 Python 代码可以直接引用这些变量采样帧。
+    """
 
     HEADERS = [
         "import matplotlib",
@@ -178,7 +187,9 @@ class SafeImageRuntime:
         "from decord import VideoReader",
         "from decord import cpu",
         "_video_support = True",
-        # 添加 plt.show() 的替代函数
+        # 添加 plt.show() 的替代函数。
+        # 模型代码中调用 plt.show() 时不会真的弹窗，而是保存当前 matplotlib figure，
+        # 转成 base64 交给主进程；主进程再转回 PIL.Image 并作为真实多模态图片返回。
         """def _internal_capture_plt_figure():
     '''Capture current matplotlib figure and save to _captured_figures'''
     fig = plt.gcf()
@@ -231,8 +242,9 @@ class SafeImageRuntime:
                         raise RuntimeError("should not use image in video type dataset")
 
                     elif item.get('type') == "video_hint_path":
-                        # print(" videos are in the messages !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                        # 处理视频输入
+                        # 处理视频输入。这里注入的是 VideoReader 对象，不是视频 token。
+                        # 模型必须写 Python 从 video_clue_j 中选择帧，再用 plt.show()
+                        # 把需要观察的帧显式返回到 VLM 上下文。
                         video_path = item.get('video_hint_path')
                         if video_path and self._global_vars.get('_video_support', False):
                             # 读取视频
@@ -261,6 +273,8 @@ class SafeImageRuntime:
 
     def exec_code(self, code: str) -> None:
         """执行代码并捕获图形"""
+        # 这里不是完整安全沙箱，只做了最基础的危险调用拦截和进程隔离。
+        # 训练/评测时应只运行可信模型和可信数据。
         if regex.search(r"(\s|^)?(input|os\.system|subprocess)\(", code):
             raise RuntimeError("Forbidden function calls detected")
 
@@ -277,6 +291,9 @@ class SafeImageRuntime:
         return self._global_vars.get("_captured_figures", [])
 
 class MultiModalPythonTool_wo_Video_Hint(ToolBase):
+    # PyVision-Video 主工具：初始不给模型视频帧，只把视频作为 video_clue_j
+    # 放进 Python runtime。模型需要按需写代码采样帧并 plt.show()，工具再把图像 observation
+    # 返回给模型继续推理。
     
     name = "pyvision_gym_wo_video_hint"
     description = "Tool for executing Python code with multimodal capabilities"
@@ -311,6 +328,9 @@ class MultiModalPythonTool_wo_Video_Hint(ToolBase):
     
     def execute(self, action_string: str, **kwargs) -> tuple:
         """Execute Python code safely"""
+        # 一轮 action 有两种合法形态：
+        # 1. <answer>...</answer>：最终答案，done=True；
+        # 2. <code>```python ... ```</code>：执行代码并返回 observation。
         answer = self.extract_answer(action_string)
         if answer:
             return "", 0.0, True, {"final_answer": answer}
@@ -336,6 +356,8 @@ class MultiModalPythonTool_wo_Video_Hint(ToolBase):
                     obs_content = exec_result.get('text', None)
                     
                     if 'images' in exec_result and exec_result['images']:
+                        # 子进程返回的是 base64 字符串；这里立即解回 PIL.Image。
+                        # base64 不会进入模型文本上下文，真正进入模型的是下方 multi_modal_data。
                         images = [self._base64_to_image(img) for img in exec_result['images']]
                         if None in images:
                             error_msg = "Something wrong with processed images."
@@ -380,6 +402,8 @@ class MultiModalPythonTool_wo_Video_Hint(ToolBase):
                         obs = {
                             "prompt": "",
                             "chat": obs_chat,
+                            # 真实图片随 observation 返回，parallel_env 会用 processor
+                            # 把它转成 pixel_values / image_grid_thw。
                             "multi_modal_data": {"image": [img for img in images if img]}
                         }
                     else:
@@ -411,6 +435,8 @@ class MultiModalPythonTool_wo_Video_Hint(ToolBase):
     
     def reset(self, raw_prompt, multi_modal_data, origin_multi_modal_data, tool_using_cumulative_reward_per_turn,  **kwargs):
         """Reset tool state"""
+        # 每条 rollout 轨迹开始时调用。origin_multi_modal_data 中保存原始 video_path，
+        # 后续 _convert_to_messages_wo_video_hint 会把它注入 Python runtime。
         self.chatml_history = raw_prompt
         self.multi_modal_data = multi_modal_data
         self.origin_multi_modal_data = origin_multi_modal_data
@@ -456,6 +482,8 @@ class MultiModalPythonTool_wo_Video_Hint(ToolBase):
 
     def _convert_to_messages_wo_video_hint(self, origin_multi_modal_data):
         """Convert multi_modal_data to messages format"""
+        # 将数据集侧保存的 {"video": [path]} 转成 runtime 初始化消息。
+        # SafeImageRuntime 会把这些 path 打开成 video_clue_0、video_clue_1 ...
         if not origin_multi_modal_data or 'video' not in origin_multi_modal_data:
             raise RuntimeError("no video in origin_multi_modal_data")
             return []

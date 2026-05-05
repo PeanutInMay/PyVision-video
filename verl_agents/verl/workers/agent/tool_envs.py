@@ -28,7 +28,10 @@ class ToolMeta(type):
             print(f" [WARNING] Class {cls.__name__} is trying to register '{cls.name}', which has already been registered by {existing.__name__}")
             return
 
-        # 注册到基类的 registry
+        # 注册到基类的 registry。
+        # 这是工具系统的入口：某个工具文件被 import 后，元类会把 tool.name
+        # 写入全局表。rollout 中的数据样本只需携带 env_name，就能通过
+        # ToolBase.create(env_name) 动态创建对应工具环境。
         ToolBase.registry[cls.name] = cls
 
 
@@ -74,6 +77,9 @@ class ToolBase(metaclass=ToolMeta):
         another_hammer = tool_class()
         ```
         """
+        # PyVision 主线常见 name：
+        # pyvision_gym_w_image_hint / pyvision_gym_wo_image_hint / pyvision_gym_wo_video_hint。
+        # 其它实验环境如 rag_v2、frozenlake、mm_search 也走同一个注册表。
         tool_cls = cls.registry.get(name, None)
         if not tool_cls:
             raise ValueError(f"No tool registered with name '{name}'")

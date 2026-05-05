@@ -286,6 +286,10 @@ class vLLMRollout(BaseRollout):
         # users can customize different sampling_params at different run
         with self.update_sampling_params(**kwargs):
             if self.config.agent.activate_agent:
+                # Agent 模式：不再一次性生成完整 response，而是进入多轮
+                # generate -> tool execute -> observation append 的交互式 rollout。
+                # agent_proto 会额外带回 env_reward、action_mask、tool_cnt 和工具返回图片的
+                # multi_modal_inputs，后续 actor/ref logprob 和 reward manager 都依赖这些字段。
                 agent_proto = agent_rollout_loop(
                     config=self.config,
                     vllm_engine=self.inference_engine,

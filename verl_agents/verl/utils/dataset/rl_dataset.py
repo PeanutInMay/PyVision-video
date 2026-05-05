@@ -91,6 +91,9 @@ def collate_fn(data_list: list[dict]) -> dict:
     return {**tensors, **non_tensors}
 
 def transfer_to_rl_form_image_w_mm_hint(data_list, prompt_template_path):
+    # 带初始图模式：把原图直接放到 prompt 的 <image> 位置，同时也保存 mm_hint。
+    # rollout reset 时，origin_multi_modal_data 会把原图注入 Python runtime 为 image_clue_0，
+    # 让模型既能直接看图，也能继续调用 code 工具做局部观察。
     if "mm_hint" in data_list[0]:
         return data_list
     else:
@@ -320,6 +323,9 @@ class RLHFDataset(Dataset):
             assert hint_type == "image", ("For dataset with mm_hint, the hint_type must be image.")
             # if self.image_key in row_dict:
             if hint_type == "image":
+                # 带初始图模式会同时构造两份数据：
+                # - images: processor 处理后的模型初始视觉输入；
+                # - origin_images: 原始 PIL 图，供工具 runtime 注入为 image_clue_i。
                 image_path = row_dict['mm_hint']['hint_path']
                 origin_images = [process_raw_image(image_path)]
                 images = [process_image(image_path, self.min_pixels, self.max_pixels)]

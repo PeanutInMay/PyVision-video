@@ -19,7 +19,12 @@ import queue
 import time
 
 class PersistentWorker:
-    """持久化的工作进程"""
+    """持久化的工作进程。
+
+    每条 rollout 轨迹持有自己的 Python 子进程，支持跨轮保留变量和中间结果。
+    对 image-wo-hint 模式来说，原图隐藏在 runtime 变量 image_hint_i 里，
+    模型需要通过代码和 plt.show() 主动把需要看的图返回给自己。
+    """
     
     def __init__(self):
         self.input_queue = multiprocessing.Queue()
@@ -65,7 +70,8 @@ class PersistentWorker:
                     program_io = io.StringIO()
                     
                     try:
-                        # 记录执行前的图像数量
+                        # 记录执行前的图像数量，只返回本轮新产生的 figure，
+                        # 避免历史图片在多轮 observation 中重复出现。
                         pre_figures_count = len(runtime.captured_figures)
                         
                         with redirect_stdout(program_io):
@@ -161,7 +167,11 @@ class PersistentWorker:
                 self.process.terminate()
 
 class SafeImageRuntime:
-    """安全版本的Runtime，强制使用隔离环境"""
+    """无初始图像输入模式的 Python runtime。
+
+    原始图片会被注入为 image_hint_0、image_hint_1 ...，但不会直接出现在模型视觉上下文。
+    模型必须调用 code 工具，用 matplotlib 展示整图、局部 crop 或增强后的图。
+    """
 
     HEADERS = [
         "import matplotlib",
@@ -172,7 +182,8 @@ class SafeImageRuntime:
         "import base64",
         "import numpy as np",
         "_captured_figures = []",  # Initialize image capture list
-        # 添加 plt.show() 的替代函数
+        # 添加 plt.show() 的替代函数：捕获当前 matplotlib figure，转成 base64
+        # 返回主进程，再由主进程解成 PIL.Image 作为真实多模态 observation。
         """def _internal_capture_plt_figure():
     '''Capture current matplotlib figure and save to _captured_figures'''
     fig = plt.gcf()
@@ -216,6 +227,8 @@ class SafeImageRuntime:
                             image_var_idx += 1
 
                     elif item.get('type') == "image_hint_base64":
+                        # image_hint_base64 表示“原图只给 Python runtime，不直接给模型看”。
+                        # 这会鼓励模型主动使用工具，而不是依赖初始视觉 token。
                         item_image_url = item['url']
                         image = base64_to_image(item_image_url)
                         if image:
@@ -230,6 +243,7 @@ class SafeImageRuntime:
 
     def exec_code(self, code: str) -> None:
         """执行代码并捕获图形"""
+        # 这里不是完整安全沙箱，只做了基础危险调用拦截和子进程隔离。
         if regex.search(r"(\s|^)?(input|os\.system|subprocess)\(", code):
             raise RuntimeError("Forbidden function calls detected")
 
@@ -246,6 +260,8 @@ class SafeImageRuntime:
         return self._global_vars.get("_captured_figures", [])
 
 class MultiModalPythonTool_wo_Image_Hint(ToolBase):
+    # PyVision-Image 的无初始图模式：模型 prompt 中只有图像尺寸和工具说明；
+    # 原图作为 image_hint_i 注入 Python runtime，模型通过代码选择要返回的视觉内容。
     name = "pyvision_gym_wo_image_hint"
     description = "Tool for executing Python code with multimodal capabilities"
     
@@ -279,6 +295,9 @@ class MultiModalPythonTool_wo_Image_Hint(ToolBase):
     
     def execute(self, action_string: str, **kwargs) -> tuple:
         """Execute Python code safely"""
+        # 一轮 action 有两种合法形态：
+        # 1. <answer>...</answer>：最终答案；
+        # 2. <code>```python ... ```</code>：执行代码，返回文本和/或图片 observation。
         answer = self.extract_answer(action_string)
         if answer:
             return "", 0.0, True, {"final_answer": answer}
@@ -304,6 +323,8 @@ class MultiModalPythonTool_wo_Image_Hint(ToolBase):
                     obs_content = exec_result.get('text', None)
                     
                     if 'images' in exec_result and exec_result['images']:
+                        # base64 只是进程间传图格式；这里会立刻解为 PIL.Image，
+                        # 后续 parallel_env 再转成模型需要的视觉张量。
                         images = [self._base64_to_image(img) for img in exec_result['images']]
                         if None in images:
                             error_msg = "Something wrong with processed images."
@@ -348,6 +369,7 @@ class MultiModalPythonTool_wo_Image_Hint(ToolBase):
                         obs = {
                             "prompt": "",
                             "chat": obs_chat,
+                            # 真实图片在这里返回给 rollout，不会作为 base64 文本喂给模型。
                             "multi_modal_data": {"image": [img for img in images if img]}
                         }
                     else:
@@ -379,6 +401,8 @@ class MultiModalPythonTool_wo_Image_Hint(ToolBase):
     
     def reset(self, raw_prompt, multi_modal_data, origin_multi_modal_data, tool_using_cumulative_reward_per_turn, **kwargs):
         """Reset tool state"""
+        # origin_multi_modal_data 保存原始 PIL 图片；reset 后会在第一次执行代码时
+        # 注入到持久化 Python worker，形成 image_hint_i。
         self.chatml_history = raw_prompt
         self.multi_modal_data = multi_modal_data
         self.origin_multi_modal_data = origin_multi_modal_data
@@ -424,6 +448,8 @@ class MultiModalPythonTool_wo_Image_Hint(ToolBase):
 
     def _convert_to_messages_wo_image_hint(self, origin_multi_modal_data):
         """Convert multi_modal_data to messages format"""
+        # 将原始 PIL 图片转成 image_hint_base64 初始化消息。
+        # 注意这一步发生在工具 runtime 内部，不代表 base64 会进入模型上下文。
         if not origin_multi_modal_data or 'image' not in origin_multi_modal_data:
             return []
         

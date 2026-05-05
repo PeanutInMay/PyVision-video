@@ -19,7 +19,10 @@ import enum
 
 class EndReasonEnum(enum.IntEnum):
     """
-    For statistics
+    For statistics.
+    这些状态主要用于 rollout 日志、过滤和排序。比如 OVER_LENGTH 或
+    EXCEED_MAX_IMAGE_NUM_32 往往说明交互轨迹不可用，后续 filter metric
+    可以据此筛掉低质量样本。
     """
     ON_GONIG = 0
     DONE = 1
@@ -41,6 +44,9 @@ def _strip_system_block(text: str) -> str:
     return result
 
 def check_vision_tokens_num_images_num_consistency(input_ids, attention_mask, vision_start_token_id, image_token_id, image_grid_thw):
+    # Qwen-VL 文本序列里的每个 <|image_pad|> 都应对应一张真实图片。
+    # 工具返回图片后，如果视觉占位符数量和 processor 产出的 image_grid_thw 数量不一致，
+    # 后续 mRoPE position ids 会不可靠，所以这里先做一致性检查。
     input_ids = input_ids[attention_mask == 1]
     vision_start_indices = torch.argwhere(input_ids == vision_start_token_id)
     vision_tokens = input_ids[vision_start_indices + 1]
@@ -56,6 +62,9 @@ def check_vision_tokens_num_images_num_consistency(input_ids, attention_mask, vi
     
 
 def _concat_vllm_input(prompt_token_ids, response_token_ids, tokenizer=None):
+    # vLLM 下一轮 generate 需要完整 prompt_token_ids。
+    # agent rollout 每一轮都会把“模型 action tokens”和“工具 observation tokens”
+    # 追加回这里，手动维护一个不断增长的多轮上下文。
     # NOTE: temporarily fix qwen-base oov issue
     if tokenizer is not None:
         max_token_id = max(tokenizer.get_vocab().values())
@@ -79,6 +88,9 @@ def _concat_vllm_input(prompt_token_ids, response_token_ids, tokenizer=None):
 
 
 def _merge_multi_modal_inputs(mm_input, other):
+    # 合并多轮工具 observation 产生的视觉张量。
+    # 例如第一轮返回 4 张视频采样帧，第二轮又返回 2 张 crop 图，
+    # pixel_values / image_grid_thw 等字段都需要按图片维度继续拼起来。
     if not mm_input and not other:
         return {}
     elif len(mm_input) == 0 and len(other) > 0:
@@ -106,9 +118,15 @@ def _merge_multi_modal_inputs(mm_input, other):
 
 
 def _preprocess_multi_modal_inputs(prompt_str, processor, **kwargs):
+    # 工具返回的 observation 可能包含 PIL.Image，但模型真正需要的是：
+    # 1. 文本里的 Qwen-VL 视觉占位符；
+    # 2. processor 生成的 pixel_values / image_grid_thw 等视觉张量。
+    # base64/PIL 只是工具侧传图的中间形态，不会作为长文本进入模型上下文。
     if processor is None or "multi_modal_data" not in kwargs:
         return prompt_str, prompt_str, {}
 
+    # vLLM 侧继续 generate 时用特殊 token 占位；训练侧计算 logprob 时用 processor
+    # 重新编码得到 obs_token_ids_model 和 mm_inputs。
     vllm_input_prompt = prompt_str.replace('<image>', '<|vision_start|><|image_pad|><|vision_end|>')
     input_mm_data = kwargs.get("multi_modal_data", {"image": []})
     
@@ -134,12 +152,18 @@ def _preprocess_multi_modal_inputs(prompt_str, processor, **kwargs):
 
 
 def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_inputs, sampling_params, max_turn_of_validation=None):
+    # 多模态工具调用的核心 rollout 循环。
+    # 普通 verl/vLLM rollout 是“一次 generate 到结束”；这里改成：
+    # generate 一段 assistant action -> 执行工具 -> 把 observation 追加回上下文 ->
+    # 再 generate。这样模型可以在同一条轨迹中多次采样视频帧、查看 crop 图并继续推理。
     from vllm.distributed import parallel_state as vllm_ps
 
     agent_sampling_params = sampling_params.clone()
     agent_sampling_params.detokenize = True
     agent_sampling_params.skip_special_tokens = False
     agent_sampling_params.spaces_between_special_tokens = False
+    # 外层仍保留 GRPO 的 n 条采样分支；但每次交互式 generate 只让每条活跃
+    # trajectory 生成 1 个 action，后面由本循环管理多轮交互。
     agent_sampling_params.n = 1
     agent_sampling_params.include_stop_str_in_output = True
     max_generated_tokens = min(config.agent.single_response_max_tokens, config.response_length)
@@ -196,10 +220,13 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
 
     print(f"############################### sampling_parameter.n: {sampling_params.n}")
 
+    # ParallelEnv 负责把每条样本绑定到对应工具实例。工具名来自数据里的 env_name。
     env = ParallelEnv(config.agent, tokenizer, processor)
     env.reset(prompts, vllm_inputs, n=sampling_params.n, tool_using_cumulative_reward_per_turn=tool_using_cumulative_reward_per_turn)
 
-    # interleaving inputs if sampling_params.n > 1
+    # interleaving inputs if sampling_params.n > 1.
+    # 一个 prompt 可能采样 n 条轨迹；这里为每条轨迹复制 vLLM prompt、
+    # 训练 token 序列、mask、工具奖励和多模态输入状态。
     for i in range(batch_size):
         for _ in range(sampling_params.n):
             vllm_input_list.append(deepcopy(vllm_inputs[i]))
@@ -233,6 +260,8 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
 
         active_indices = [idx for idx, is_active in enumerate(active_mask) if is_active]
         active_vllm_inputs = [vinput for vinput, is_active in zip(vllm_input_list, active_mask) if is_active]
+        # 只对仍未结束的轨迹调用 vLLM。返回文本可能是 <code>...</code>、
+        # <answer>...</answer>，或格式错误内容；具体解释交给工具环境处理。
         actions = vllm_engine.generate(
             prompts=active_vllm_inputs,
             sampling_params=agent_sampling_params,
@@ -241,6 +270,8 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
         
         assert len(actions) == len(active_vllm_inputs)
 
+        # 工具执行只在 TP first rank 上做，避免多卡重复执行 Python/读视频。
+        # 结果再 broadcast 给同一 TP 组其它 rank，保持所有 rank 的 rollout 状态一致。
         if pg.is_first_rank:
             obs_results = env.step(active_indices, actions)
         else:
@@ -251,7 +282,8 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
 
 
         for idx, obs, act, rew, done, is_error in zip(active_indices, observations, actions, rewards, dones, is_errors):
-            # process response token ids
+            # 先把模型刚生成的 action 追加进训练序列。action_mask=1，表示这些 token
+            # 是模型自己生成的，需要参与 policy loss / logprob 计算。
             response_token_ids = torch.tensor(act.outputs[0].token_ids, dtype=torch.int64, device=running_states[idx].device)
             running_states[idx] = torch.cat([running_states[idx], response_token_ids])
             vllm_input_list[idx]['prompt_token_ids'] = _concat_vllm_input(
@@ -268,7 +300,8 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
             running_action_masks[idx] = torch.cat([running_action_masks[idx], action_mask])
             running_attn_masks[idx] = torch.cat([running_attn_masks[idx], action_mask])
 
-            # Ensure the last token is not obs
+            # Ensure the last token is not obs.
+            # 如果序列已经超长，直接结束该轨迹，避免最后停在 observation token 上。
             if running_states[idx].shape[-1] >= max_total_length or len(vllm_input_list[idx]['prompt_token_ids']) >= max_total_length:
                 active_mask[idx] = False
                 end_reason_list[idx] = EndReasonEnum.OVER_LENGTH
@@ -291,7 +324,9 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
             
             tool_call_cnt_list[idx] += 1
 
-            # process obs tokens and images
+            # process obs tokens and images.
+            # observation 是工具返回给模型看的内容，action_mask=0：
+            # 它进入 attention/context，但不是模型采样出来的 token，不参与 actor loss。
             if 'prompt_token_ids_vllm' in obs.keys() and 'prompt_token_ids_model' in obs.keys():
                 obs_token_ids_vllm = obs['prompt_token_ids_vllm']
                 obs_token_ids_model = obs['prompt_token_ids_model'].to(running_states[idx].device)
@@ -322,6 +357,8 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
 
                 mm_data = obs.get('multi_modal_data', {})
                 if 'image' in mm_data.keys():
+                    # vLLM 下一轮 generate 需要继续携带真实 PIL 图片，而不仅是文本里的 <image>。
+                    # 这里把工具返回的图片追加到当前 trajectory 的 vLLM 输入中。
                     if 'multi_modal_data' not in vllm_input_list[idx].keys():
                         vllm_input_list[idx]['multi_modal_data'] = {"image": []}
                     vllm_input_list[idx]['multi_modal_data']['image'] += mm_data['image']
@@ -333,6 +370,8 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
 
                 mm_input = obs.get('multi_modal_inputs', {})
                 if mm_input:
+                    # 训练侧 forward/logprob 用的是 processor 产出的张量，所以还要同步合并
+                    # pixel_values/image_grid_thw 等字段。
                     mm_input_list[idx] = _merge_multi_modal_inputs(mm_input_list[idx], mm_input)
                     if 'pixel_values' in mm_input_list[idx] and mm_input_list[idx]['pixel_values'] is not None:
                         hasimage_list[idx] = True
@@ -344,6 +383,7 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
 
     print(f"[DEBUG end reasons]", ", ".join(f"{member.name}: {end_reason_list.count(member)}" for member in EndReasonEnum))
 
+    # 关闭每条轨迹背后的工具进程，尤其是 PyVision Python code 工具中的持久化子进程。
     env.close()
     target_device = prompts.batch['input_ids'].device
     trajlength_list = [state.shape[-1] for state in running_states]
@@ -372,6 +412,9 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
         # ]
         # position_ids_tensor = torch.stack(position_ids_list, dim=0)
 
+        # Qwen2.5-VL 使用 mRoPE。工具调用过程中新增的图片需要重新计算视觉位置编码；
+        # 如果视觉 token 和 image_grid_thw 对不上，则用 dummy position ids 标记为异常轨迹，
+        # 后续 filter metric 可以把它筛掉。
         position_ids_list = []
 
         for i in range(batch_size * sampling_params.n):
@@ -441,6 +484,9 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
     print(f"################## len of mm_input_list: {len(mm_input_list)} #########################")
     print(f"################## keys of mm_input_list: {mm_input_list[0].keys()} #########################")
 
+    # 返回给 trainer 的已经是完整交互轨迹的尾部：
+    # response/action_mask/env_reward/tool_cnt/multi_modal_inputs 等都会参与后续
+    # reward、advantage、logprob 和 filtering。
     return DataProto.from_dict(
         tensors={
             "response": state_tensor[:, -config.response_length: ],
@@ -461,6 +507,8 @@ def agent_rollout_loop(config, vllm_engine, vllm_inputs, prompts, multi_modal_in
 
 
 def execute_tool_call(sample, tokenizer=None, processor=None, pbar=None):
+    # 单次工具调用后处理。tool.execute 负责业务逻辑；本函数负责把工具返回的
+    # 字符串/多模态 observation 转成 rollout 可以继续拼接的 token 和 mm_inputs。
     action_string = sample.get('action', '')
     tool = sample.get('tool', None)
 
@@ -501,6 +549,9 @@ def execute_tool_call(sample, tokenizer=None, processor=None, pbar=None):
 
     elif isinstance(tool_result, dict):
         # Format 3: {"prompt": "...", "chat": [{"role": "...", "content": "..."}, ...], "multi_modal_data": ...}
+        # PyVision code 工具返回图片时走这个分支：chat 中有 <image> 占位文本，
+        # multi_modal_data 中有真实 PIL.Image。随后 _preprocess_multi_modal_inputs
+        # 会把它变成 Qwen-VL 的视觉 token 和视觉张量。
         prompt_str = tool_result.pop("prompt", "")
         chat_list = tool_result.pop("chat", [])
 
@@ -536,7 +587,9 @@ def execute_tool_call(sample, tokenizer=None, processor=None, pbar=None):
 
 class ParallelEnv:
     """
-    The interface is designed to be the similar to : https://github.com/openai/gym
+    The interface is designed to be the similar to : https://github.com/openai/gym.
+    它不是具体工具，而是 rollout 内多条 trajectory 的工具调度器：
+    self.tools[i] 对应第 i 条采样轨迹的工具实例。
     """
     def __init__(self, env_config, tokenizer, processor, **kwargs):
         self.config = env_config
@@ -570,7 +623,8 @@ class ParallelEnv:
         real_indices = []
         valid_actions = []
         
-        # 1. filtering valid actions
+        # 1. filtering valid actions.
+        # vLLM 生成超长或空 action 时，直接把该轨迹标为结束/错误，不再进入工具执行。
         for i, (idx, act) in enumerate(zip(active_indices, actions)):
             if act.outputs[0].finish_reason == 'length':
                 done_list.append(True)
@@ -597,7 +651,9 @@ class ParallelEnv:
                 tool=self.tools[idx],
             ))
 
-        # 2. executing actions (sync or async)
+        # 2. executing actions (sync or async).
+        # 工具执行可能很慢，例如视频读帧、Python 画图，所以这里允许线程池并发。
+        # 每个 trajectory 仍有独立 tool 实例和独立 Python worker，不共享运行时变量。
         num_workers = min(self.config.concurrent_workers, len(valid_actions))
         pbar = tqdm(total=len(valid_actions), desc=f'Tool calling on {num_workers} workers') if self.config.show_tqdm else None
         if num_workers <= 1:
@@ -625,6 +681,9 @@ class ParallelEnv:
         return obs_list, reward_list, done_list, is_error_list
 
     def reset(self, prompts, vllm_inputs, n=1, tool_using_cumulative_reward_per_turn=0.0, **kwargs):
+        # 每个 rollout batch 开始时，为样本创建对应工具环境。
+        # 数据里的 env_name 决定用哪个工具；origin_multi_modal_data 携带原始图片或视频路径，
+        # 会被注入到工具 runtime 中，形成 image_hint_i / image_clue_i / video_clue_j。
         self.tools = []
         reset_output_list = []
         assert len(prompts) == len(vllm_inputs), f"{len(prompts)=}, {len(vllm_inputs)=}"
@@ -640,7 +699,9 @@ class ParallelEnv:
             origin_multi_modal_data = data_item.non_tensor_batch.pop("origin_multi_modal_data", None)
             for _ in range(n):
                 if tool_name:
-                    # init tools from config field `tool_name_key`
+                    # init tools from config field `tool_name_key`.
+                    # sampling_params.n > 1 时，同一个 prompt 会复制 n 个工具实例，
+                    # 这样每条采样轨迹的 Python 变量、图片计数和终止状态互不污染。
                     tool_fns = ToolBase.create(tool_name)
                     reset_output = tool_fns.reset(
                         raw_prompt=raw_prompt, 

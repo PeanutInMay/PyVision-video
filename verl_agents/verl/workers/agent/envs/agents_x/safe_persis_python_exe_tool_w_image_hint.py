@@ -19,7 +19,11 @@ import queue
 import time
 
 class PersistentWorker:
-    """持久化的工作进程"""
+    """持久化的工作进程。
+
+    w_image_hint 模式下，模型初始已经看到原图；同时 Python runtime 也保存 image_clue_i，
+    便于模型在后续轮次继续 crop、放大或做统计分析。
+    """
     
     def __init__(self):
         self.input_queue = multiprocessing.Queue()
@@ -65,7 +69,8 @@ class PersistentWorker:
                     program_io = io.StringIO()
                     
                     try:
-                        # 记录执行前的图像数量
+                        # 记录执行前的图像数量，只返回本轮新产生的 figure，
+                        # 避免把初始图片和历史图片重复返回。
                         pre_figures_count = len(runtime.captured_figures)
                         
                         with redirect_stdout(program_io):
@@ -161,7 +166,11 @@ class PersistentWorker:
                 self.process.terminate()
 
 class SafeImageRuntime:
-    """安全版本的Runtime，强制使用隔离环境"""
+    """带初始图像输入模式的 Python runtime。
+
+    初始图片既会作为模型视觉输入出现，也会被注入为 image_clue_0、image_clue_1 ...
+    供模型后续用 Python 做局部观察和图像处理。
+    """
 
     HEADERS = [
         "import matplotlib",
@@ -172,7 +181,8 @@ class SafeImageRuntime:
         "import base64",
         "import numpy as np",
         "_captured_figures = []",  # Initialize image capture list
-        # 添加 plt.show() 的替代函数
+        # 添加 plt.show() 的替代函数：把 matplotlib figure 捕获成图片 observation，
+        # 再由主进程转成 PIL.Image 返回给模型。
         """def _internal_capture_plt_figure():
     '''Capture current matplotlib figure and save to _captured_figures'''
     fig = plt.gcf()
@@ -218,6 +228,7 @@ class SafeImageRuntime:
 
     def exec_code(self, code: str) -> None:
         """执行代码并捕获图形"""
+        # 这里不是完整安全沙箱，只做了基础危险调用拦截和子进程隔离。
         if regex.search(r"(\s|^)?(input|os\.system|subprocess)\(", code):
             raise RuntimeError("Forbidden function calls detected")
 
@@ -234,6 +245,8 @@ class SafeImageRuntime:
         return self._global_vars.get("_captured_figures", [])
 
 class MultiModalPythonTool_w_Image_Hint(ToolBase):
+    # PyVision-Image 的带初始图模式：模型一开始能看到原图，同时也能通过 code 工具
+    # 生成新的局部图、增强图或分析结果作为后续 observation。
     name = "pyvision_gym_w_image_hint"
     description = "Tool for executing Python code with multimodal capabilities"
     
@@ -266,6 +279,9 @@ class MultiModalPythonTool_w_Image_Hint(ToolBase):
     
     def execute(self, action_string: str, **kwargs) -> tuple:
         """Execute Python code safely"""
+        # 一轮 action 有两种合法形态：
+        # 1. <answer>...</answer>：最终答案；
+        # 2. <code>```python ... ```</code>：执行代码，返回文本和/或图片 observation。
         answer = self.extract_answer(action_string)
         if answer:
             return "", 0.0, True, {"final_answer": answer}
@@ -291,6 +307,8 @@ class MultiModalPythonTool_w_Image_Hint(ToolBase):
                     obs_content = exec_result.get('text', 'None')
                     
                     if 'images' in exec_result and exec_result['images']:
+                        # 子进程用 base64 回传图片；主进程立即解成 PIL.Image，
+                        # 最终通过 multi_modal_data 进入 Qwen-VL processor。
                         images = [self._base64_to_image(img) for img in exec_result['images']]
                         if None in images:
                             error_msg = "Something wrong with processed images."
@@ -335,6 +353,7 @@ class MultiModalPythonTool_w_Image_Hint(ToolBase):
                         obs = {
                             "prompt": "",
                             "chat": obs_chat,
+                            # 真实图片在这里返回给 rollout；文本里只保留 <image> 占位符。
                             "multi_modal_data": {"image": [img for img in images if img]}
                         }
                     else:
@@ -366,6 +385,8 @@ class MultiModalPythonTool_w_Image_Hint(ToolBase):
     
     def reset(self, raw_prompt, multi_modal_data, origin_multi_modal_data, tool_using_cumulative_reward_per_turn,  **kwargs):
         """Reset tool state"""
+        # 带初始图模式直接使用 origin_multi_modal_data 初始化 runtime，
+        # 让 image_clue_i 与模型已看到的原始图像保持一致。
         self.chatml_history = raw_prompt
         self.multi_modal_data = origin_multi_modal_data
         self._figures_count = 1

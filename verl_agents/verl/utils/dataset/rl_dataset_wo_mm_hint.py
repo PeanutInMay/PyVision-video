@@ -87,6 +87,8 @@ def sample_frames_from_video(video_path, num_frames=8):
         - 'width': Video width
         - 'height': Video height
     """
+    # 这里主要用于构造 prompt 里的视频元信息。PyVision-Video 主线默认 num_frames=0，
+    # 不把初始帧直接给模型，而是只告诉模型 video_clue_0 可在 Python runtime 中使用。
     vr = VideoReader(video_path, ctx=cpu(0))
     video_length = len(vr)
     fps = vr.get_avg_fps()
@@ -162,6 +164,11 @@ def transfer_to_rl_form_image(data_list, prompt_template_path):
 
 
 def transfer_to_rl_form_video(data_list, prompt_template_path):
+    # 将原始 video QA json 转成 verl agent 训练格式。
+    # 关键字段：
+    # - env_name: 决定 rollout 时创建 pyvision_gym_wo_video_hint 工具；
+    # - mm_hint: 保存视频路径，后续注入 Python runtime 为 video_clue_0；
+    # - prompt: 告诉模型必须写 Python 采样帧并用 plt.show() 返回 observation。
     if "mm_hint" in data_list[0]:
         return data_list
     else:
@@ -343,12 +350,16 @@ class RLHF_wo_mm_hint_Dataset(Dataset):
                 mm_hint_type = row_dict[self.mm_hint_key]['hint_type']
                 mm_hint_path = row_dict[self.mm_hint_key]['hint_path']
                 if mm_hint_type == "image":
+                    # 无初始图模式：原图不进入当前 prompt 的视觉输入，只保存在
+                    # origin_multi_modal_data，之后由工具 runtime 注入为 image_hint_0。
                     image = Image.open(mm_hint_path).convert("RGB")
                     origin_images = [process_raw_image(image)]
                     images = [process_image(image)]
                     origin_multi_modal_data = {"image": origin_images}
 
                 if mm_hint_type == "video":
+                    # 视频模式：prompt 本身只包含文本元信息，视频路径保存在
+                    # origin_multi_modal_data 中，之后由工具 runtime 打开为 video_clue_0。
                     videos = [mm_hint_path]
                     origin_multi_modal_data = {"video": videos}
 
@@ -360,7 +371,9 @@ class RLHF_wo_mm_hint_Dataset(Dataset):
             if "second_per_grid_ts" in model_inputs:
                 model_inputs.pop("second_per_grid_ts")
 
-            # There's a trap here, multi_modal_inputs has to be a dict, not BatchFeature
+            # There's a trap here, multi_modal_inputs has to be a dict, not BatchFeature.
+            # 这个字段是 agent 工具的“随行原始多模态数据”，不直接作为初始视觉 token
+            # 送入模型；真正的图片 observation 会在工具调用后动态加入。
             row_dict['origin_multi_modal_data'] = origin_multi_modal_data
 
         else:
