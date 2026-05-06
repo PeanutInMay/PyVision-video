@@ -23,4 +23,5 @@ python "${SCRIPT_DIR}/qwen3vl_transformers_agent_eval.py" \
   --temperature 0.6 \
   --max-new-tokens 8192 \
   --max-turns 6 \
+  --video-initial-frames 64 \
   "$@"

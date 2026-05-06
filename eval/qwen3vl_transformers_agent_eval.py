@@ -19,11 +19,13 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
 from transformers import AutoModelForImageTextToText, AutoProcessor
 from transformers.generation.stopping_criteria import StoppingCriteria, StoppingCriteriaList
+from transformers.video_utils import VideoMetadata
 
 try:
     from decord import VideoReader, cpu
@@ -45,7 +47,7 @@ DEFAULT_MIN_PIXELS = DEFAULT_MIN_VISUAL_TOKENS * QWEN3_SPATIAL_FACTOR * QWEN3_SP
 DEFAULT_MAX_PIXELS = DEFAULT_MAX_VISUAL_TOKENS * QWEN3_SPATIAL_FACTOR * QWEN3_SPATIAL_FACTOR
 
 IMAGE_PROMPT_TEMPLATE_KEY = "vistool_with_img_info_v2"
-VIDEO_PROMPT_TEMPLATE_KEY = "vis_tool_with_img_info_video_v6"
+VIDEO_PROMPT_TEMPLATE_KEY = "vis_tool_with_img_info_video_v7"
 
 
 class StopOnSubstrings(StoppingCriteria):
@@ -188,6 +190,28 @@ def get_video_info_with_decord(video_path: str) -> Dict[str, Any]:
     }
 
 
+def sample_video_for_initial_input(video_path: str, num_frames: int) -> Tuple[np.ndarray, VideoMetadata]:
+    if VideoReader is None or cpu is None:
+        raise RuntimeError("decord is required for initial video sampling but is not importable.")
+    video_reader = VideoReader(video_path, ctx=cpu(0))
+    video_len = len(video_reader)
+    if video_len <= 0:
+        raise RuntimeError(f"Video has no frames: {video_path}")
+
+    sampled_frames = max(1, min(num_frames, video_len))
+    indices = np.linspace(0, video_len - 1, sampled_frames, dtype=int)
+    frames = video_reader.get_batch(indices).asnumpy()
+    height, width = frames.shape[1:3]
+    metadata = VideoMetadata(
+        total_num_frames=int(video_len),
+        fps=float(video_reader.get_avg_fps()),
+        width=int(width),
+        height=int(height),
+        frames_indices=indices.tolist(),
+    )
+    return frames, metadata
+
+
 def sanitize_messages_for_debug(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def sanitize_content(content: Any) -> Any:
         if isinstance(content, str):
@@ -206,6 +230,15 @@ def sanitize_messages_for_debug(messages: List[Dict[str, Any]]) -> List[Dict[str
                 video_value = clean["video"]
                 shape = getattr(video_value, "shape", None)
                 clean["video"] = f"<decoded_video shape={tuple(shape) if shape is not None else 'unknown'}>"
+            if "video_metadata" in clean:
+                metadata = clean["video_metadata"]
+                clean["video_metadata"] = {
+                    "total_num_frames": getattr(metadata, "total_num_frames", None),
+                    "fps": getattr(metadata, "fps", None),
+                    "width": getattr(metadata, "width", None),
+                    "height": getattr(metadata, "height", None),
+                    "frames_indices": getattr(metadata, "frames_indices", None),
+                }
             sanitized.append(clean)
         return sanitized
 
@@ -336,16 +369,47 @@ def build_initial_messages(
         ]
     else:
         video_info = get_video_info_with_decord(sample.media_path)
+        initial_video: Optional[np.ndarray] = None
+        initial_video_metadata: Optional[VideoMetadata] = None
+        initial_video_text = ""
+        if args.video_initial_frames > 0:
+            initial_video, initial_video_metadata = sample_video_for_initial_input(
+                sample.media_path,
+                args.video_initial_frames,
+            )
+            initial_video_text = (
+                f"{initial_video.shape[0]} frames have been uniformly sampled from the video "
+                "and provided as the initial visual input. "
+                "The original full video is still available in the Python runtime as `video_clue_0`."
+            )
+        else:
+            initial_video_text = (
+                "No frames are provided as initial visual input. "
+                "The original full video is available in the Python runtime as `video_clue_0`."
+            )
         video_info_text = (
             f"Frame Width: {video_info['width']}; Frame Height: {video_info['height']};\n"
             f"Video Length: {video_info['video_length']}; Sample FPS: {video_info['fps']:.2f}\n"
-            "The original video has been read into the global variable `video_clue_0`."
+            f"{initial_video_text}"
         )
         prompt = prompt_templates[VIDEO_PROMPT_TEMPLATE_KEY].format(
             video_info=video_info_text,
             query=sample.question,
         )
-        content = [{"type": "text", "text": prompt}]
+        if initial_video is not None:
+            content = [
+                {"type": "text", "text": "<video_clue_0>"},
+                {
+                    "type": "video",
+                    "video": initial_video,
+                    "video_metadata": initial_video_metadata,
+                    "min_pixels": args.min_pixels,
+                    "max_pixels": args.max_pixels,
+                },
+                {"type": "text", "text": "</video_clue_0>\n" + prompt},
+            ]
+        else:
+            content = [{"type": "text", "text": prompt}]
 
     return [{"role": "user", "content": content}]
 
@@ -450,12 +514,27 @@ def generate_once(
     args: argparse.Namespace,
 ) -> Tuple[str, str]:
     processor_messages = normalize_messages_for_processor(messages)
+    video_metadata = [
+        item["video_metadata"]
+        for message in processor_messages
+        for item in message.get("content", [])
+        if isinstance(item, dict) and item.get("type") == "video" and item.get("video_metadata") is not None
+    ]
     template_kwargs: Dict[str, Any] = {
         "images_kwargs": {
             "min_pixels": args.min_pixels,
             "max_pixels": args.max_pixels,
-        }
+        },
+        "videos_kwargs": {
+            "do_sample_frames": False,
+            "size": {
+                "shortest_edge": args.min_pixels,
+                "longest_edge": args.max_pixels,
+            },
+        },
     }
+    if video_metadata:
+        template_kwargs["videos_kwargs"]["video_metadata"] = video_metadata[0] if len(video_metadata) == 1 else video_metadata
 
     inputs = processor.apply_chat_template(
         processor_messages,
@@ -634,6 +713,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repetition-penalty", type=float, default=1.0)
     parser.add_argument("--min-pixels", type=int, default=DEFAULT_MIN_PIXELS)
     parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
+    parser.add_argument(
+        "--video-initial-frames",
+        type=int,
+        default=64,
+        help="Uniformly sample this many frames as the initial video input. Set 0 to disable initial video input.",
+    )
     parser.add_argument("--dry-run-data", action="store_true", help="Only parse data and write no model outputs.")
     return parser.parse_args()
 
@@ -644,7 +729,7 @@ def main() -> None:
         "Visual pixel budget: "
         f"min_pixels={args.min_pixels} ({args.min_pixels // (QWEN3_SPATIAL_FACTOR ** 2)} visual tokens), "
         f"max_pixels={args.max_pixels} ({args.max_pixels // (QWEN3_SPATIAL_FACTOR ** 2)} visual tokens); "
-        "video_initial_frames=0 (training-aligned; video is available only as video_clue_0 in tool runtime)"
+        f"video_initial_frames={args.video_initial_frames}"
     )
 
     samples = build_samples(args)
