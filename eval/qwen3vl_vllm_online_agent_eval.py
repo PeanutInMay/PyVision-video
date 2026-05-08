@@ -320,27 +320,30 @@ def parse_dataset_names(value: str) -> List[str]:
 
 def build_samples(args: argparse.Namespace) -> List[EvalSample]:
     samples: List[EvalSample] = []
+    limit_per_dataset = args.first_n_per_dataset
+    if limit_per_dataset is None:
+        limit_per_dataset = args.limit_per_dataset
     for dataset_name in parse_dataset_names(args.datasets):
         if dataset_name == "vstar":
-            samples.extend(load_vstar_samples(args.vstar_path, args.limit_per_dataset))
+            samples.extend(load_vstar_samples(args.vstar_path, limit_per_dataset))
         elif dataset_name == "videomme":
-            samples.extend(load_videomme_samples(args.videomme_path, args.limit_per_dataset))
+            samples.extend(load_videomme_samples(args.videomme_path, limit_per_dataset))
         elif dataset_name == "hrbench4k":
-            samples.extend(load_hrbench_samples(args.hrbench4k_jsonl, "HR-Bench-4K", args.limit_per_dataset))
+            samples.extend(load_hrbench_samples(args.hrbench4k_jsonl, "HR-Bench-4K", limit_per_dataset))
         elif dataset_name == "hrbench8k":
-            samples.extend(load_hrbench_samples(args.hrbench8k_jsonl, "HR-Bench-8K", args.limit_per_dataset))
+            samples.extend(load_hrbench_samples(args.hrbench8k_jsonl, "HR-Bench-8K", limit_per_dataset))
         elif dataset_name == "longvideobench":
             samples.extend(
                 load_longvideobench_samples(
                     args.longvideobench_json,
                     args.longvideobench_data_dir,
-                    args.limit_per_dataset,
+                    limit_per_dataset,
                 )
             )
         elif dataset_name == "mathvista":
-            samples.extend(load_mathvista_samples(args.mathvista_jsonl, args.mathvista_image_dir, args.limit_per_dataset))
+            samples.extend(load_mathvista_samples(args.mathvista_jsonl, args.mathvista_image_dir, limit_per_dataset))
         elif dataset_name == "mathvision":
-            samples.extend(load_mathvision_samples(args.mathvision_jsonl, args.mathvision_image_dir, args.limit_per_dataset))
+            samples.extend(load_mathvision_samples(args.mathvision_jsonl, args.mathvision_image_dir, limit_per_dataset))
     return samples
 
 
@@ -608,7 +611,7 @@ async def run_eval(args: argparse.Namespace) -> None:
         for sample in samples:
             counts[sample.dataset] = counts.get(sample.dataset, 0) + 1
         print(json.dumps({"dataset_counts": counts}, ensure_ascii=False))
-        for sample in samples[: min(10, len(samples))]:
+        for sample in samples[: min(args.dry_run_preview_limit, len(samples))]:
             preview = sample.__dict__.copy()
             preview["messages_preview"] = sanitize_messages_for_debug_online(
                 build_initial_messages(sample, args, prompt_templates)
@@ -673,6 +676,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--datasets", default=DEFAULT_DATASETS)
     parser.add_argument("--limit-per-dataset", type=int, default=None)
+    parser.add_argument("--first-n-per-dataset", type=int, default=None)
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--max-turns", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=8192)
@@ -684,6 +688,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-pixels", type=int, default=DEFAULT_MAX_PIXELS)
     parser.add_argument("--video-initial-frames", type=int, default=64)
     parser.add_argument("--dry-run-data", action="store_true")
+    parser.add_argument("--dry-run-preview-limit", type=int, default=10)
     return parser.parse_args()
 
 
