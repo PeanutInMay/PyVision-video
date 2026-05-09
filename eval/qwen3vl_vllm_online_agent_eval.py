@@ -6,6 +6,8 @@ import asyncio
 import base64
 import io
 import json
+import math
+import re
 import sys
 import time
 import traceback
@@ -30,7 +32,7 @@ from qwen3vl_transformers_agent_eval import (
     QWEN3_SPATIAL_FACTOR,
     VIDEO_PROMPT_TEMPLATE_KEY,
     EvalSample,
-    PythonMultimodalRuntime,
+    PythonMultimodalRuntime as _BasePythonMultimodalRuntime,
     extract_code_actions,
     extract_prediction,
     get_video_info_with_decord,
@@ -51,9 +53,20 @@ DEFAULT_MATHVISTA_JSONL = "/share/home/sxjiang/zhzhu/dataset/MathVista/extracted
 DEFAULT_MATHVISTA_IMAGE_DIR = "/share/home/sxjiang/zhzhu/dataset/MathVista/images"
 DEFAULT_MATHVISION_JSONL = "/share/home/sxjiang/zhzhu/dataset/MathVision/extracted/testmini/metadata.jsonl"
 DEFAULT_MATHVISION_IMAGE_DIR = "/share/home/sxjiang/zhzhu/dataset/MathVision/images"
-DEFAULT_DATASETS = "vstar,videomme,hrbench4k,hrbench8k,longvideobench,mathvista,mathvision"
+# DEFAULT_DATASETS = "vstar,videomme,hrbench4k,hrbench8k,longvideobench,mathvista,mathvision"
+DEFAULT_DATASETS = "vstar,videomme,hrbench4k,hrbench8k,mathvista,mathvision"
 LONGVIDEOBENCH_SKIP_CATEGORIES = {"T3E", "T3O", "TAA", "T2E", "T2O", "T2A"}
 MODEL_NAME = "qwen3-vl-thinking-8b"
+
+
+class PythonMultimodalRuntime(_BasePythonMultimodalRuntime):
+    """Online eval runtime with virtual-image and PIL-indexing rewrites enabled."""
+
+    def _rewrite_virtual_clue_opens(self, code: str) -> str:
+        return super()._rewrite_virtual_clue_opens(code)
+
+    def _rewrite_pil_indexing(self, code: str) -> str:
+        return super()._rewrite_pil_indexing(code)
 
 
 def write_jsonl_record(path: Path, record: Dict[str, Any]) -> None:
@@ -85,6 +98,64 @@ def load_completed_resume_keys(path: Path) -> set[str]:
             if dataset is not None and question_id is not None:
                 completed.add(sample_resume_key(str(dataset), str(question_id)))
     return completed
+
+
+def normalize_eval_answer(value: Any) -> str:
+    text = str(value or "").strip().strip("'\"").strip()
+    boxed = re.findall(r"\\boxed\{([^{}]+)\}", text)
+    if boxed:
+        text = boxed[-1].strip()
+    return text.strip().strip("'\"").strip()
+
+
+def parse_eval_float(text: str) -> Optional[float]:
+    match = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", text.replace(",", ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def is_prediction_correct(prediction: Any, gold_answer: Any) -> bool:
+    pred = normalize_eval_answer(prediction)
+    gold = normalize_eval_answer(gold_answer)
+    if not pred or not gold:
+        return False
+    if re.fullmatch(r"[A-E]", gold, flags=re.IGNORECASE):
+        return pred[:1].upper() == gold.upper()
+    pred_num = parse_eval_float(pred)
+    gold_num = parse_eval_float(gold)
+    if pred_num is not None and gold_num is not None:
+        return math.isclose(pred_num, gold_num, rel_tol=1e-4, abs_tol=1e-4)
+    return pred.lower() == gold.lower()
+
+
+def load_rerun_keys(path: Path, mode: str) -> set[str]:
+    keys = set()
+    if not path.exists():
+        raise FileNotFoundError(f"Rerun source does not exist: {path}")
+    include_tool_errors = mode in {"both", "tool_errors"}
+    include_incorrect = mode in {"both", "incorrect"}
+    with open(path, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"Warning: skip malformed rerun line {line_no} in {path}", file=sys.stderr)
+                continue
+            dataset = record.get("dataset")
+            question_id = record.get("question_id")
+            if dataset is None or question_id is None:
+                continue
+            is_tool_error = record.get("status") == "tool_execution_error"
+            is_wrong = not is_prediction_correct(record.get("prediction", ""), record.get("gold_answer", ""))
+            if (include_tool_errors and is_tool_error) or (include_incorrect and is_wrong):
+                keys.add(sample_resume_key(str(dataset), str(question_id)))
+    return keys
 
 
 def to_file_url(path: str) -> str:
@@ -451,7 +522,7 @@ def make_extra_body(args: argparse.Namespace) -> Dict[str, Any]:
 
 
 async def generate_once(client: Any, messages: List[Dict[str, Any]], args: argparse.Namespace) -> str:
-    response = await client.chat.completions.create(
+    request = client.chat.completions.create(
         model=args.served_model_name,
         messages=normalize_openai_messages(messages),
         max_tokens=args.max_new_tokens,
@@ -460,6 +531,10 @@ async def generate_once(client: Any, messages: List[Dict[str, Any]], args: argpa
         stop=["</code>", "</answer>"],
         extra_body=make_extra_body(args),
     )
+    if args.request_timeout_seconds and args.request_timeout_seconds > 0:
+        response = await asyncio.wait_for(request, timeout=args.request_timeout_seconds)
+    else:
+        response = await request
     return response.choices[0].message.content or ""
 
 
@@ -606,6 +681,19 @@ async def run_eval(args: argparse.Namespace) -> None:
     elif not args.dry_run_data and output_path.exists():
         output_path.unlink()
 
+    if args.rerun_from_results:
+        rerun_keys = load_rerun_keys(Path(args.rerun_from_results), args.rerun_mode)
+        before_count = len(samples)
+        samples = [
+            sample
+            for sample in samples
+            if sample_resume_key(sample.dataset, sample.question_id) in rerun_keys
+        ]
+        print(
+            f"Rerun filter enabled: selected {len(samples)} / {before_count} samples "
+            f"from {args.rerun_from_results} with mode={args.rerun_mode}"
+        )
+
     if args.dry_run_data:
         counts: Dict[str, int] = {}
         for sample in samples:
@@ -674,12 +762,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--output-path", default=None)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--rerun-from-results", default=None)
+    parser.add_argument("--rerun-mode", choices=["both", "tool_errors", "incorrect"], default="both")
     parser.add_argument("--datasets", default=DEFAULT_DATASETS)
     parser.add_argument("--limit-per-dataset", type=int, default=None)
     parser.add_argument("--first-n-per-dataset", type=int, default=None)
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--max-turns", type=int, default=10)
     parser.add_argument("--max-new-tokens", type=int, default=8192)
+    parser.add_argument("--request-timeout-seconds", type=float, default=0.0)
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--top-p", type=float, default=0.95)
     parser.add_argument("--top-k", type=int, default=20)

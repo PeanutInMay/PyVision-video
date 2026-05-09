@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 
-DEFAULT_OUR_METHOD_PATH = "eval/results/qwen3vl_vllm_online_agent/qwen3vl_vllm_online_agent_20260508_131354.jsonl"
+DEFAULT_OUR_METHOD_PATH = "eval/results/qwen3vl_vllm_online_agent/qwen3vl_vllm_online_agent_no_lvb.jsonl"
 DEFAULT_BASELINE_DIR = "eval/results/qwen3vl_vllm_online_baselines"
 DEFAULT_METHOD_PATHS = {
     "our_method": DEFAULT_OUR_METHOD_PATH,

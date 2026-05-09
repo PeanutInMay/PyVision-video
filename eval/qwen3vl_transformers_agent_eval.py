@@ -46,8 +46,8 @@ DEFAULT_MAX_VISUAL_TOKENS = 1024
 DEFAULT_MIN_PIXELS = DEFAULT_MIN_VISUAL_TOKENS * QWEN3_SPATIAL_FACTOR * QWEN3_SPATIAL_FACTOR
 DEFAULT_MAX_PIXELS = DEFAULT_MAX_VISUAL_TOKENS * QWEN3_SPATIAL_FACTOR * QWEN3_SPATIAL_FACTOR
 
-IMAGE_PROMPT_TEMPLATE_KEY = "vistool_with_img_info_v2"
-VIDEO_PROMPT_TEMPLATE_KEY = "vis_tool_with_img_info_video_v7"
+IMAGE_PROMPT_TEMPLATE_KEY = "vistool_with_img_info_v3"
+VIDEO_PROMPT_TEMPLATE_KEY = "vis_tool_with_img_info_video_v8"
 
 
 class StopOnSubstrings(StoppingCriteria):
@@ -143,6 +143,7 @@ class PythonMultimodalRuntime:
         pre_image_count = len(self._captured_images)
         stdout = io.StringIO()
         modified_code = self._rewrite_virtual_clue_opens(code)
+        modified_code = self._rewrite_pil_indexing(modified_code)
         modified_code = modified_code.replace("plt.show()", "_internal_capture_plt_figure()")
 
         try:
@@ -167,10 +168,45 @@ class PythonMultimodalRuntime:
         ]
         rewritten = code
         for name in clue_names:
-            quoted = rf"['\"]{re.escape(name)}['\"]"
+            quoted = rf"['\"]{re.escape(name)}(?:\.[A-Za-z0-9_]+)?['\"]"
             rewritten = re.sub(rf"Image\.open\(\s*{quoted}\s*\)", f"{name}.copy()", rewritten)
             rewritten = re.sub(rf"Image\.open\(\s*{re.escape(name)}\s*\)", f"{name}.copy()", rewritten)
+            rewritten = re.sub(rf"\bimread\(\s*{quoted}\s*\)", f"np.array({name}.copy())", rewritten)
+
+        # Common model hallucination: image1.png/image2.jpg for the first/second clue.
+        for idx, name in enumerate(clue_names, start=1):
+            numbered = rf"['\"]image{idx}(?:\.[A-Za-z0-9_]+)?['\"]"
+            rewritten = re.sub(rf"Image\.open\(\s*{numbered}\s*\)", f"{name}.copy()", rewritten)
+            rewritten = re.sub(rf"\bimread\(\s*{numbered}\s*\)", f"np.array({name}.copy())", rewritten)
         return rewritten
+
+    def _rewrite_pil_indexing(self, code: str) -> str:
+        """Convert obvious PIL image slicing/comparison patterns to numpy arrays."""
+        pil_vars = {
+            name
+            for name, value in self.globals.items()
+            if re.fullmatch(r"(image_clue|image_hint)_\d+", name) and isinstance(value, Image.Image)
+        }
+
+        assignment_re = re.compile(
+            r"^\s*([A-Za-z_]\w*)\s*=\s*"
+            r"([A-Za-z_]\w*)"
+            r"(?:\.(?:copy|convert|crop)\([^\n]*\))?\s*$",
+            flags=re.MULTILINE,
+        )
+        changed = True
+        while changed:
+            changed = False
+            for lhs, rhs in assignment_re.findall(code):
+                if rhs in pil_vars and lhs not in pil_vars:
+                    pil_vars.add(lhs)
+                    changed = True
+
+        for name in sorted(pil_vars, key=len, reverse=True):
+            escaped = re.escape(name)
+            code = re.sub(rf"\b{escaped}\s*\[", f"np.array({name})[", code)
+            code = re.sub(rf"\b{escaped}\s*(?=(?:[<>]=?|==|!=)\s*[-+]?\d)", f"np.array({name})", code)
+        return code
 
 
 def get_video_info_with_decord(video_path: str) -> Dict[str, Any]:

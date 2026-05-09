@@ -1,0 +1,480 @@
+[
+  {
+    "method": "our_method",
+    "dataset": "HR-Bench-4K",
+    "modality": "image",
+    "total": 100,
+    "correct": 74,
+    "accuracy": 0.74,
+    "avg_elapsed_seconds": 35.862684,
+    "median_elapsed_seconds": 23.986478,
+    "avg_model_request_seconds": 35.002229,
+    "avg_generation_turns": 1.73,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 94,
+      "tool_execution_error": 6
+    }
+  },
+  {
+    "method": "our_method",
+    "dataset": "HR-Bench-8K",
+    "modality": "image",
+    "total": 100,
+    "correct": 68,
+    "accuracy": 0.68,
+    "avg_elapsed_seconds": 44.256342,
+    "median_elapsed_seconds": 31.248458,
+    "avg_model_request_seconds": 42.24565,
+    "avg_generation_turns": 1.86,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 95,
+      "no_code_or_answer": 1,
+      "tool_execution_error": 4
+    }
+  },
+  {
+    "method": "our_method",
+    "dataset": "MathVision",
+    "modality": "image",
+    "total": 100,
+    "correct": 56,
+    "accuracy": 0.56,
+    "avg_elapsed_seconds": 135.37099,
+    "median_elapsed_seconds": 130.277312,
+    "avg_model_request_seconds": 135.349202,
+    "avg_generation_turns": 1.15,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 84,
+      "tool_execution_error": 7,
+      "no_code_or_answer": 9
+    }
+  },
+  {
+    "method": "our_method",
+    "dataset": "MathVista",
+    "modality": "image",
+    "total": 100,
+    "correct": 33,
+    "accuracy": 0.33,
+    "avg_elapsed_seconds": 57.638025,
+    "median_elapsed_seconds": 28.748618,
+    "avg_model_request_seconds": 57.600352,
+    "avg_generation_turns": 1.2,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 93,
+      "no_code_or_answer": 6,
+      "tool_execution_error": 1
+    }
+  },
+  {
+    "method": "our_method",
+    "dataset": "VideoMME",
+    "modality": "video",
+    "total": 100,
+    "correct": 80,
+    "accuracy": 0.8,
+    "avg_elapsed_seconds": 58.224322,
+    "median_elapsed_seconds": 22.707147,
+    "avg_model_request_seconds": 57.042091,
+    "avg_generation_turns": 1.29,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 95,
+      "no_code_or_answer": 2,
+      "tool_execution_error": 3
+    }
+  },
+  {
+    "method": "our_method",
+    "dataset": "vstar_bench",
+    "modality": "image",
+    "total": 100,
+    "correct": 76,
+    "accuracy": 0.76,
+    "avg_elapsed_seconds": 61.083212,
+    "median_elapsed_seconds": 50.662187,
+    "avg_model_request_seconds": 60.748135,
+    "avg_generation_turns": 1.87,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 91,
+      "tool_execution_error": 7,
+      "no_code_or_answer": 2
+    }
+  },
+  {
+    "method": "our_method",
+    "dataset": "ALL",
+    "modality": "ALL",
+    "total": 600,
+    "correct": 387,
+    "accuracy": 0.645,
+    "avg_elapsed_seconds": 65.405929,
+    "median_elapsed_seconds": 41.802471,
+    "avg_model_request_seconds": 64.66461,
+    "avg_generation_turns": 1.516667,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 552,
+      "tool_execution_error": 28,
+      "no_code_or_answer": 20
+    }
+  },
+  {
+    "method": "direct",
+    "dataset": "HR-Bench-4K",
+    "modality": "image",
+    "total": 100,
+    "correct": 68,
+    "accuracy": 0.68,
+    "avg_elapsed_seconds": 4.868637,
+    "median_elapsed_seconds": 2.25235,
+    "avg_model_request_seconds": 4.868593,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 100
+    }
+  },
+  {
+    "method": "direct",
+    "dataset": "HR-Bench-8K",
+    "modality": "image",
+    "total": 100,
+    "correct": 57,
+    "accuracy": 0.57,
+    "avg_elapsed_seconds": 5.533693,
+    "median_elapsed_seconds": 2.849052,
+    "avg_model_request_seconds": 5.533656,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 100
+    }
+  },
+  {
+    "method": "direct",
+    "dataset": "MathVision",
+    "modality": "image",
+    "total": 100,
+    "correct": 41,
+    "accuracy": 0.41,
+    "avg_elapsed_seconds": 91.320489,
+    "median_elapsed_seconds": 92.879111,
+    "avg_model_request_seconds": 91.320376,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 65,
+      "no_answer": 35
+    }
+  },
+  {
+    "method": "direct",
+    "dataset": "MathVista",
+    "modality": "image",
+    "total": 100,
+    "correct": 29,
+    "accuracy": 0.29,
+    "avg_elapsed_seconds": 36.654452,
+    "median_elapsed_seconds": 21.810258,
+    "avg_model_request_seconds": 36.654397,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 91,
+      "no_answer": 9
+    }
+  },
+  {
+    "method": "direct",
+    "dataset": "VideoMME",
+    "modality": "video",
+    "total": 100,
+    "correct": 65,
+    "accuracy": 0.65,
+    "avg_elapsed_seconds": 28.35752,
+    "median_elapsed_seconds": 11.873206,
+    "avg_model_request_seconds": 28.298243,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 95,
+      "no_answer": 5
+    }
+  },
+  {
+    "method": "direct",
+    "dataset": "vstar_bench",
+    "modality": "image",
+    "total": 100,
+    "correct": 64,
+    "accuracy": 0.64,
+    "avg_elapsed_seconds": 10.833498,
+    "median_elapsed_seconds": 8.908822,
+    "avg_model_request_seconds": 10.833468,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 100
+    }
+  },
+  {
+    "method": "direct",
+    "dataset": "ALL",
+    "modality": "ALL",
+    "total": 600,
+    "correct": 324,
+    "accuracy": 0.54,
+    "avg_elapsed_seconds": 29.594715,
+    "median_elapsed_seconds": 9.267556,
+    "avg_model_request_seconds": 29.584789,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 551,
+      "no_answer": 49
+    }
+  },
+  {
+    "method": "perception_tool",
+    "dataset": "HR-Bench-4K",
+    "modality": "image",
+    "total": 100,
+    "correct": 67,
+    "accuracy": 0.67,
+    "avg_elapsed_seconds": 16.80318,
+    "median_elapsed_seconds": 7.905181,
+    "avg_model_request_seconds": 12.047689,
+    "avg_generation_turns": 2.03,
+    "avg_perception_calls": 1.03,
+    "status_counts": {
+      "success": 98,
+      "no_perception_or_answer": 2
+    }
+  },
+  {
+    "method": "perception_tool",
+    "dataset": "HR-Bench-8K",
+    "modality": "image",
+    "total": 100,
+    "correct": 58,
+    "accuracy": 0.58,
+    "avg_elapsed_seconds": 16.559718,
+    "median_elapsed_seconds": 9.504547,
+    "avg_model_request_seconds": 11.972471,
+    "avg_generation_turns": 2.03,
+    "avg_perception_calls": 1.03,
+    "status_counts": {
+      "success": 99,
+      "no_perception_or_answer": 1
+    }
+  },
+  {
+    "method": "perception_tool",
+    "dataset": "MathVision",
+    "modality": "image",
+    "total": 100,
+    "correct": 42,
+    "accuracy": 0.42,
+    "avg_elapsed_seconds": 120.479941,
+    "median_elapsed_seconds": 140.046378,
+    "avg_model_request_seconds": 104.655151,
+    "avg_generation_turns": 1.66,
+    "avg_perception_calls": 0.66,
+    "status_counts": {
+      "success": 63,
+      "no_perception_or_answer": 37
+    }
+  },
+  {
+    "method": "perception_tool",
+    "dataset": "MathVista",
+    "modality": "image",
+    "total": 100,
+    "correct": 30,
+    "accuracy": 0.3,
+    "avg_elapsed_seconds": 54.374135,
+    "median_elapsed_seconds": 32.421216,
+    "avg_model_request_seconds": 42.913319,
+    "avg_generation_turns": 1.94,
+    "avg_perception_calls": 0.94,
+    "status_counts": {
+      "success": 95,
+      "no_perception_or_answer": 5
+    }
+  },
+  {
+    "method": "perception_tool",
+    "dataset": "VideoMME",
+    "modality": "video",
+    "total": 100,
+    "correct": 65,
+    "accuracy": 0.65,
+    "avg_elapsed_seconds": 39.344692,
+    "median_elapsed_seconds": 18.852853,
+    "avg_model_request_seconds": 31.803227,
+    "avg_generation_turns": 1.98,
+    "avg_perception_calls": 0.98,
+    "status_counts": {
+      "success": 95,
+      "no_perception_or_answer": 5
+    }
+  },
+  {
+    "method": "perception_tool",
+    "dataset": "vstar_bench",
+    "modality": "image",
+    "total": 100,
+    "correct": 67,
+    "accuracy": 0.67,
+    "avg_elapsed_seconds": 25.961388,
+    "median_elapsed_seconds": 16.863108,
+    "avg_model_request_seconds": 19.660863,
+    "avg_generation_turns": 2.01,
+    "avg_perception_calls": 1.01,
+    "status_counts": {
+      "success": 97,
+      "no_perception_or_answer": 3
+    }
+  },
+  {
+    "method": "perception_tool",
+    "dataset": "ALL",
+    "modality": "ALL",
+    "total": 600,
+    "correct": 329,
+    "accuracy": 0.548333,
+    "avg_elapsed_seconds": 45.587176,
+    "median_elapsed_seconds": 18.461579,
+    "avg_model_request_seconds": 37.175454,
+    "avg_generation_turns": 1.941667,
+    "avg_perception_calls": 0.941667,
+    "status_counts": {
+      "success": 547,
+      "no_perception_or_answer": 53
+    }
+  },
+  {
+    "method": "perception_inline",
+    "dataset": "HR-Bench-4K",
+    "modality": "image",
+    "total": 100,
+    "correct": 73,
+    "accuracy": 0.73,
+    "avg_elapsed_seconds": 7.740372,
+    "median_elapsed_seconds": 3.244968,
+    "avg_model_request_seconds": 7.740327,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 99,
+      "no_answer": 1
+    }
+  },
+  {
+    "method": "perception_inline",
+    "dataset": "HR-Bench-8K",
+    "modality": "image",
+    "total": 100,
+    "correct": 57,
+    "accuracy": 0.57,
+    "avg_elapsed_seconds": 7.274453,
+    "median_elapsed_seconds": 3.749411,
+    "avg_model_request_seconds": 7.274409,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 100
+    }
+  },
+  {
+    "method": "perception_inline",
+    "dataset": "MathVision",
+    "modality": "image",
+    "total": 100,
+    "correct": 42,
+    "accuracy": 0.42,
+    "avg_elapsed_seconds": 87.242204,
+    "median_elapsed_seconds": 88.891835,
+    "avg_model_request_seconds": 87.242088,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 68,
+      "no_answer": 32
+    }
+  },
+  {
+    "method": "perception_inline",
+    "dataset": "MathVista",
+    "modality": "image",
+    "total": 100,
+    "correct": 32,
+    "accuracy": 0.32,
+    "avg_elapsed_seconds": 34.695793,
+    "median_elapsed_seconds": 17.890279,
+    "avg_model_request_seconds": 34.695716,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 94,
+      "no_answer": 6
+    }
+  },
+  {
+    "method": "perception_inline",
+    "dataset": "VideoMME",
+    "modality": "video",
+    "total": 100,
+    "correct": 56,
+    "accuracy": 0.56,
+    "avg_elapsed_seconds": 32.098789,
+    "median_elapsed_seconds": 12.875242,
+    "avg_model_request_seconds": 32.045938,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 88,
+      "no_answer": 12
+    }
+  },
+  {
+    "method": "perception_inline",
+    "dataset": "vstar_bench",
+    "modality": "image",
+    "total": 100,
+    "correct": 66,
+    "accuracy": 0.66,
+    "avg_elapsed_seconds": 12.558824,
+    "median_elapsed_seconds": 8.992652,
+    "avg_model_request_seconds": 12.558724,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 99,
+      "no_answer": 1
+    }
+  },
+  {
+    "method": "perception_inline",
+    "dataset": "ALL",
+    "modality": "ALL",
+    "total": 600,
+    "correct": 326,
+    "accuracy": 0.543333,
+    "avg_elapsed_seconds": 30.268406,
+    "median_elapsed_seconds": 9.705134,
+    "avg_model_request_seconds": 30.259534,
+    "avg_generation_turns": 1.0,
+    "avg_perception_calls": 0.0,
+    "status_counts": {
+      "success": 548,
+      "no_answer": 52
+    }
+  }
+]
